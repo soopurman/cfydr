@@ -1,0 +1,120 @@
+#!/bin/bash
+
+usage(){
+	echo 'usage: $0 [-h] [--t MANAGEMENT_IP] [-s SECONDS] -d DATA_DIR -i ACTIVE|PASSIVE'
+	echo '       --help				show this usage and exit'
+	echo '       --management-ip MANAGEMENT_IP	which Cloudify manager to connect to if not already indicated by environment variables or files under .cloudify in the current working directory'
+	echo '       --seconds SECONDS			seconds to wait between processing next snapshot (defaults to 30)'
+	echo '       --data-dir DATA_DIR		path to a storage area on a shared data bus for passing snapshots between active and passive managers (required)'
+	echo '       --initial-role ACTIVE|PASSIVE	specify the initial direction of snapshot transfers (required)'
+}
+
+args=0
+seconds=30
+
+while [ $# -gt 0 ] || [ $args -lt 1 ] ; do {
+	case $1 in
+		-t|--management-ip)
+			manager=$2
+			shift
+			;;
+		-s|--seconds)
+			seconds=$2
+			shift
+			;;
+		-d|--data-dir)
+			data=$2
+			shift
+			;;
+		-i|--initial-role)
+			role=$2
+			shift
+			;;
+		-h|--help)
+			usage
+			;;
+		*)
+			usage
+			exit 1
+			;;
+	esac
+	shift
+	args=$((args+1))
+} ; done
+
+scratch=`mktemp`
+
+if cfy status > $scratch 2>&1 ; then {
+	manager=`sed -rn '1s/^.*ip=(.*)]$/\1/p' $scratch`
+} ; else {
+	if ! cfy use -t $manager ; then {
+		echo cannot reach Cloudify manager >&2
+		exit 2
+	} ; fi
+} ; fi
+
+switched=1
+while [ $switched = 1 ] ; do {
+switched=0
+case $role in
+	ACTIVE)
+		while [ $role = "ACTIVE" ] ; do {
+			id="${0}_$(date +%s)_${manager}"
+			cfy snapshots create -s $id
+			status="executing"
+			while ! echo $status | grep created > /dev/null ; do {
+				if ! cfy snapshots list > $scratch 2>&1 ; then {
+					role=PASSIVE
+					switched=1
+					break
+				} ; fi
+				list="$(awk -F \| -v id=$id '$2~id{print $4"\n"$5}' $scratch)"
+				error=`echo "$list" | sed 1d`
+				if echo $error | egrep -v '^\s*$' ; then {
+					role=PASSIVE
+					switched=1
+					break
+				} ; fi
+				status=`echo "$list" | sed 2d`
+			} ; done
+			if ! cfy snapshots download -s $id -o $data/$id.zip ; then {
+				echo error downloading snapshot $id to $data >&2
+				exit 4
+			} ; fi
+			cfy snapshots delete -s $id
+			sleep $seconds
+		} ; done
+		;;
+	PASSIVE)
+		while [ $role = "PASSIVE" ] ; do {
+			file=`ls -t $data/${0}_*.zip | head -1`
+			id=`basename -s .zip $file`
+			stamp=`echo $id | awk -F _ '{print $2}'`
+			cfy snapshots upload -s $id -p $file
+			while [ $role = "PASSIVE" ]; do {
+				prev_file=$file
+				prev_id=$id
+				prev_stamp=$stamp
+				while [ $stamp = $prev_stamp ] ; do {
+					sleep 1
+					file=`ls -t $data/${0}_*.zip | head -1`
+					id=`basename -s .zip $file`
+					stamp=`echo $id | awk -F _ '{print $2}'`
+					if [ $((`date +%s` - prev_stamp)) -gt $((seconds * 2)) ]  ; then {
+						role=ACTIVE
+						switched=1
+						cfy snapshots restore -s $prev_id
+						break
+					} ; fi
+				} ; done
+				cfy snapshots upload -s $id -p $file && cfy snapshots delete -s $prev_id
+			} ; done
+		} ; done
+		;;
+	*)
+		echo invalid initial role >&2
+		exit 3
+		;;
+esac
+} ; done
+rm $scratch
