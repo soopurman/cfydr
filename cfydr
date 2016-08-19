@@ -1,7 +1,9 @@
 #!/bin/bash
 
+this=`basename $0`
+
 usage(){
-	echo 'usage: $0 [-h] [--t MANAGEMENT_IP] [-s SECONDS] -d DATA_DIR -i ACTIVE|PASSIVE'
+	echo 'usage: $this [-h] [--t MANAGEMENT_IP] [-s SECONDS] -d DATA_DIR -i ACTIVE|PASSIVE'
 	echo '       --help				show this usage and exit'
 	echo '       --management-ip MANAGEMENT_IP	which Cloudify manager to connect to if not already indicated by environment variables or files under .cloudify in the current working directory'
 	echo '       --seconds SECONDS			seconds to wait between processing next snapshot (defaults to 30)'
@@ -59,7 +61,7 @@ switched=0
 case $role in
 	ACTIVE)
 		while [ $role = "ACTIVE" ] ; do {
-			id="${0}_$(date +%s)_${manager}"
+			id="${this}_$(date +%s)_${manager}"
 			cfy snapshots create -s $id
 			status="executing"
 			while ! echo $status | grep created > /dev/null ; do {
@@ -87,7 +89,7 @@ case $role in
 		;;
 	PASSIVE)
 		while [ $role = "PASSIVE" ] ; do {
-			file=`ls -t $data/${0}_*.zip | head -1`
+			file=`ls -t $data/${this}_*.zip | head -1`
 			id=`basename -s .zip $file`
 			stamp=`echo $id | awk -F _ '{print $2}'`
 			cfy snapshots upload -s $id -p $file
@@ -97,7 +99,7 @@ case $role in
 				prev_stamp=$stamp
 				while [ $stamp = $prev_stamp ] ; do {
 					sleep 1
-					file=`ls -t $data/${0}_*.zip | head -1`
+					file=`ls -t $data/${this}_*.zip | head -1`
 					id=`basename -s .zip $file`
 					stamp=`echo $id | awk -F _ '{print $2}'`
 					if [ $((`date +%s` - prev_stamp)) -gt $((seconds * 2)) ]  ; then {
